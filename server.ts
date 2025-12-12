@@ -38,8 +38,13 @@ type ChatHistoryItem = {
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Initialize System
+let isInitialized = false;
+
+// Initialize System (lazy initialization for serverless)
 const initializeSystem = async (): Promise<void> => {
+  if (isInitialized) return;
+  
+  isInitialized = true;
   await initRedis();
   await initVectorStore();
 
@@ -68,7 +73,11 @@ const initializeSystem = async (): Promise<void> => {
   }
 };
 
-initializeSystem();
+// Initialize on first request (for serverless)
+app.use(async (_req, _res, next) => {
+  await initializeSystem();
+  next();
+});
 
 // --- Routes ---
 
@@ -166,7 +175,12 @@ app.delete('/api/session/:sessionId', async (req: Request, res: Response) => {
   res.json({ message: 'Session cleared' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+// Only listen if not in serverless environment
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
+
+export default app;
 
