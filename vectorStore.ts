@@ -1,8 +1,31 @@
 import path from 'path';
 import fs from 'fs';
-// LanceDB package currently ships without rich TS types; treat as any
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const lancedb = require('vectordb');
+
+// Lazy load vectordb to handle cases where native library isn't available
+let lancedb: any = null;
+let lancedbLoadError: Error | null = null;
+let vectordbAvailable = false;
+
+const loadLanceDB = (): any => {
+  if (lancedb) return lancedb;
+  if (lancedbLoadError) {
+    return null; // Return null instead of throwing
+  }
+  
+  try {
+    // Use require for CommonJS compatibility
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    lancedb = require('vectordb');
+    vectordbAvailable = true;
+    return lancedb;
+  } catch (error) {
+    lancedbLoadError = error as Error;
+    vectordbAvailable = false;
+    console.error('Failed to load vectordb native library:', error);
+    console.warn('Vector store functionality will be disabled');
+    return null; // Return null instead of throwing
+  }
+};
 
 type DocumentInput = {
   id: string;
@@ -36,11 +59,17 @@ const DB_DIR = '/tmp/lancedb';
 
 export const initVectorStore = async (): Promise<void> => {
   try {
+    const lancedbModule = loadLanceDB();
+    if (!lancedbModule || !vectordbAvailable) {
+      console.warn('LanceDB not available, vector store will be disabled');
+      return;
+    }
+
     if (!fs.existsSync(DB_DIR)) {
       fs.mkdirSync(DB_DIR, { recursive: true });
     }
 
-    db = await (lancedb as LanceDB).connect(DB_DIR);
+    db = await (lancedbModule as LanceDB).connect(DB_DIR);
 
     const tableNames: string[] = await db.tableNames();
     if (tableNames.includes('news_articles')) {
@@ -51,12 +80,22 @@ export const initVectorStore = async (): Promise<void> => {
     }
   } catch (error) {
     console.error('Failed to initialize LanceDB:', error);
+    console.warn('Vector store will be disabled. Search functionality may not work.');
+    vectordbAvailable = false;
   }
 };
 
 export const addDocuments = async (documents: DocumentInput[]): Promise<void> => {
-  if (!db) await initVectorStore();
-  if (documents.length === 0) return;
+  if (!db) {
+    try {
+      await initVectorStore();
+    } catch (error) {
+      console.warn('Cannot initialize vector store, skipping document addition');
+      return;
+    }
+  }
+  
+  if (documents.length === 0 || !db) return;
 
   const data = documents.map((doc) => ({
     id: doc.id,
