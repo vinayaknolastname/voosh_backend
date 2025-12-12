@@ -42,16 +42,25 @@ let isInitialized = false;
 
 // Initialize System (lazy initialization for serverless)
 const initializeSystem = async (): Promise<void> => {
-  if (isInitialized) return;
+  if (isInitialized) {
+    console.log('System already initialized, skipping...');
+    return;
+  }
   
+  console.log('Starting system initialization...');
   isInitialized = true;
+  
   await initRedis();
+  console.log('Redis initialized');
+  
   await initVectorStore();
+  console.log('Vector store initialization attempted');
 
   try {
     const articles: Article[] = await ingestNews();
     console.log(`Ingested ${articles.length} articles. Generating embeddings...`);
 
+    let addedCount = 0;
     for (const article of articles) {
       const textToEmbed = `${article.title}. ${article.content}`;
       const embedding = await generateEmbeddings(textToEmbed);
@@ -64,12 +73,14 @@ const initializeSystem = async (): Promise<void> => {
             metadata: article,
           },
         ]);
+        addedCount++;
       }
       await delay(200);
     }
-    console.log('System initialization complete.');
+    console.log(`System initialization complete. Added ${addedCount} documents to vector store.`);
   } catch (error) {
     console.error('Initialization failed:', error);
+    console.error('Error stack:', error instanceof Error ? error.stack : String(error));
   }
 };
 

@@ -6,16 +6,17 @@ let lancedb: any = null;
 let lancedbLoadError: Error | null = null;
 let vectordbAvailable = false;
 
-const loadLanceDB = (): any => {
+const loadLanceDB = async (): Promise<any> => {
   if (lancedb) return lancedb;
   if (lancedbLoadError) {
     return null; // Return null instead of throwing
   }
   
   try {
-    // Use require for CommonJS compatibility
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    lancedb = require('vectordb');
+    // Use dynamic import to defer loading until actually needed
+    // This prevents the module from being evaluated at module load time
+    const vectordbModule = await import('vectordb');
+    lancedb = vectordbModule.default || vectordbModule;
     vectordbAvailable = true;
     return lancedb;
   } catch (error) {
@@ -59,19 +60,28 @@ const DB_DIR = '/tmp/lancedb';
 
 export const initVectorStore = async (): Promise<void> => {
   try {
-    const lancedbModule = loadLanceDB();
+    console.log('Attempting to load LanceDB...');
+    const lancedbModule = await loadLanceDB();
     if (!lancedbModule || !vectordbAvailable) {
       console.warn('LanceDB not available, vector store will be disabled');
+      console.warn('Error details:', lancedbLoadError?.message || 'Unknown error');
       return;
     }
 
+    console.log('LanceDB module loaded successfully');
+    
     if (!fs.existsSync(DB_DIR)) {
       fs.mkdirSync(DB_DIR, { recursive: true });
+      console.log(`Created directory: ${DB_DIR}`);
     }
 
+    console.log('Connecting to LanceDB...');
     db = await (lancedbModule as LanceDB).connect(DB_DIR);
+    console.log('Connected to LanceDB successfully');
 
     const tableNames: string[] = await db.tableNames();
+    console.log('Existing tables:', tableNames);
+    
     if (tableNames.includes('news_articles')) {
       table = await db.openTable('news_articles');
       console.log('Opened existing LanceDB table: news_articles');
@@ -80,22 +90,36 @@ export const initVectorStore = async (): Promise<void> => {
     }
   } catch (error) {
     console.error('Failed to initialize LanceDB:', error);
+    console.error('Error stack:', error instanceof Error ? error.stack : String(error));
     console.warn('Vector store will be disabled. Search functionality may not work.');
     vectordbAvailable = false;
+    db = null;
+    table = null;
   }
 };
 
 export const addDocuments = async (documents: DocumentInput[]): Promise<void> => {
+  if (documents.length === 0) {
+    console.log('No documents to add');
+    return;
+  }
+
   if (!db) {
+    console.log('DB not initialized, attempting to initialize...');
     try {
       await initVectorStore();
     } catch (error) {
-      console.warn('Cannot initialize vector store, skipping document addition');
+      console.error('Cannot initialize vector store, skipping document addition:', error);
       return;
     }
   }
   
-  if (documents.length === 0 || !db) return;
+  if (!db) {
+    console.warn('DB is still null after initialization attempt. Vector store unavailable.');
+    return;
+  }
+
+  console.log(`Preparing to add ${documents.length} documents to vector store...`);
 
   const data = documents.map((doc) => ({
     id: doc.id,
@@ -106,14 +130,17 @@ export const addDocuments = async (documents: DocumentInput[]): Promise<void> =>
 
   try {
     if (!table) {
+      console.log('Creating new LanceDB table with documents...');
       table = await db.createTable('news_articles', data);
       console.log(`Created LanceDB table with ${data.length} documents.`);
     } else {
+      console.log('Adding documents to existing table...');
       await table.add(data);
       console.log(`Added ${data.length} documents to LanceDB.`);
     }
   } catch (error) {
     console.error('Error adding documents to LanceDB:', error);
+    console.error('Error details:', error instanceof Error ? error.stack : String(error));
   }
 };
 
