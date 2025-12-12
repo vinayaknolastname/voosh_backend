@@ -1,10 +1,39 @@
 import path from 'path';
 import fs from 'fs';
 
+// In-memory fallback vector store
+type InMemoryDocument = {
+  id: string;
+  text: string;
+  embedding: number[];
+  metadata: Record<string, unknown>;
+};
+
+const inMemoryStore: InMemoryDocument[] = [];
+
+// Cosine similarity function
+const cosineSimilarity = (vecA: number[], vecB: number[]): number => {
+  if (vecA.length !== vecB.length) return 0;
+  
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+  return denominator === 0 ? 0 : dotProduct / denominator;
+};
+
 // Lazy load vectordb to handle cases where native library isn't available
 let lancedb: any = null;
 let lancedbLoadError: Error | null = null;
 let vectordbAvailable = false;
+let useInMemoryStore = false;
 
 const loadLanceDB = async (): Promise<any> => {
   if (lancedb) return lancedb;
@@ -63,8 +92,10 @@ export const initVectorStore = async (): Promise<void> => {
     console.log('Attempting to load LanceDB...');
     const lancedbModule = await loadLanceDB();
     if (!lancedbModule || !vectordbAvailable) {
-      console.warn('LanceDB not available, vector store will be disabled');
+      console.warn('LanceDB not available, falling back to in-memory vector store');
       console.warn('Error details:', lancedbLoadError?.message || 'Unknown error');
+      useInMemoryStore = true;
+      console.log('Using in-memory vector store (data will not persist between cold starts)');
       return;
     }
 
@@ -88,13 +119,15 @@ export const initVectorStore = async (): Promise<void> => {
     } else {
       console.log('LanceDB table news_articles does not exist yet. It will be created on first ingestion.');
     }
+    useInMemoryStore = false;
   } catch (error) {
     console.error('Failed to initialize LanceDB:', error);
     console.error('Error stack:', error instanceof Error ? error.stack : String(error));
-    console.warn('Vector store will be disabled. Search functionality may not work.');
+    console.warn('Falling back to in-memory vector store');
     vectordbAvailable = false;
     db = null;
     table = null;
+    useInMemoryStore = true;
   }
 };
 
@@ -104,22 +137,33 @@ export const addDocuments = async (documents: DocumentInput[]): Promise<void> =>
     return;
   }
 
-  if (!db) {
+  // Initialize if needed
+  if (!db && !useInMemoryStore) {
     console.log('DB not initialized, attempting to initialize...');
     try {
       await initVectorStore();
     } catch (error) {
-      console.error('Cannot initialize vector store, skipping document addition:', error);
-      return;
+      console.error('Cannot initialize vector store:', error);
+      useInMemoryStore = true;
     }
   }
-  
-  if (!db) {
-    console.warn('DB is still null after initialization attempt. Vector store unavailable.');
+
+  // Use in-memory store if LanceDB is not available
+  if (useInMemoryStore || !db) {
+    console.log(`Adding ${documents.length} documents to in-memory vector store...`);
+    for (const doc of documents) {
+      inMemoryStore.push({
+        id: doc.id,
+        text: doc.text,
+        embedding: doc.embedding,
+        metadata: doc.metadata || {},
+      });
+    }
+    console.log(`Added ${documents.length} documents to in-memory store. Total documents: ${inMemoryStore.length}`);
     return;
   }
 
-  console.log(`Preparing to add ${documents.length} documents to vector store...`);
+  console.log(`Preparing to add ${documents.length} documents to LanceDB...`);
 
   const data = documents.map((doc) => ({
     id: doc.id,
@@ -145,9 +189,39 @@ export const addDocuments = async (documents: DocumentInput[]): Promise<void> =>
 };
 
 export const search = async (queryEmbedding: number[], topK = 3): Promise<SearchResult[]> => {
-  if (!table) {
-    console.warn('Vector store is empty or not initialized.');
-    return [];
+  // Use in-memory store if LanceDB is not available
+  if (useInMemoryStore || !table) {
+    if (inMemoryStore.length === 0) {
+      console.warn('In-memory vector store is empty.');
+      return [];
+    }
+
+    console.log(`Searching in-memory store with ${inMemoryStore.length} documents...`);
+    
+    // Calculate similarity scores for all documents
+    const scoredDocs = inMemoryStore.map((doc) => ({
+      ...doc,
+      score: cosineSimilarity(queryEmbedding, doc.embedding),
+    }));
+
+    // Sort by score (descending) and take top K
+    const results = scoredDocs
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK)
+      .map((doc): SearchResult => ({
+        id: doc.id,
+        text: doc.text,
+        score: doc.score,
+        metadata: {
+          title: doc.metadata.title as string,
+          link: doc.metadata.link as string,
+          pubDate: doc.metadata.pubDate as string,
+          source: doc.metadata.source as string,
+        },
+      }));
+
+    console.log(`Found ${results.length} results from in-memory store`);
+    return results;
   }
 
   try {
