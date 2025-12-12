@@ -16,13 +16,14 @@
   "description": "",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@vercel/node": "^3.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "node-fetch": "^3.3.2",
     "redis": "^5.10.0",
     "rss-parser": "^3.13.0",
-    "uuid": "^13.0.0",
+    "uuid": "^9.0.1",
     "vectordb": "^0.21.2"
   },
   "devDependencies": {
